@@ -1,98 +1,76 @@
 name: ogv-probe
 
-# 一次性探测：验证「观看剧集内容」任务第 1 步 receive/v2 补上 build 后是否返回 code=0
-# 只发只读/领取类请求，不实现后续链路，跑完即可删除本文件
+# 一次性探测：定位「观看剧集内容」6007000 的真实原因
+# 第二轮：对比 App UA 与网页 UA，并 dump 任务结构
 on:
   workflow_dispatch:
 
 jobs:
   probe:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 8
     steps:
-      - name: Check login state
+      - name: Probe receive/v2 with both UAs
         env:
           COOKIESTR: ${{ secrets.COOKIESTR }}
         run: |
+          set -u
           if [ -z "$COOKIESTR" ]; then echo "::error::COOKIESTR is empty"; exit 1; fi
-          curl -s 'https://api.bilibili.com/x/web-interface/nav' \
-            -H "Cookie: $COOKIESTR" \
-            -H 'User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36' \
-            -o /tmp/nav.json
-          jq -r '"nav: code=\(.code) isLogin=\(.data.isLogin) uname=\(.data.uname) level=\(.data.level) vipStatus=\(.data.vipStatus) vipType=\(.data.vipType)"' /tmp/nav.json \
-            || { echo "nav raw:"; head -c 300 /tmp/nav.json; }
 
-      - name: Extract csrf and buvid from cookie
-        env:
-          COOKIESTR: ${{ secrets.COOKIESTR }}
-        run: |
+          # 同一步内提取，绝不写入 GITHUB_ENV（否则会以明文出现在日志 env 块里）
           csrf=$(printf '%s' "$COOKIESTR" | tr ';' '\n' | sed -n 's/^[[:space:]]*bili_jct=//p' | tr -d '\r\n')
           buvid=$(printf '%s' "$COOKIESTR" | tr ';' '\n' | sed -n 's/^[[:space:]]*buvid3=//p' | tr -d '\r\n')
-          if [ -z "$csrf" ]; then echo "::error::bili_jct not found in COOKIESTR"; exit 1; fi
-          # 只输出长度，不输出凭证本身
-          echo "csrf_len=${#csrf} buvid_len=${#buvid}"
-          {
-            echo "BILI_CSRF=$csrf"
-            echo "BILI_BUVID=$buvid"
-          } >> "$GITHUB_ENV"
+          echo "::add-mask::$csrf"
+          echo "::add-mask::$buvid"
 
-      - name: Step 1 A - receive/v2 WITH build
+          UA_APP='Mozilla/5.0 BiliDroid/8.45.1 (bbcallen@gmail.com) os/android model/SM-S9210 mobi_app/android build/8451100 channel/bili innerVer/8451110 osVer/12 network/2'
+          UA_WEB='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+          URL='https://api.bilibili.com/pgc/activity/score/task/receive/v2'
+
+          call() {
+            label="$1"; ua="$2"; with_build="$3"; with_app_headers="$4"
+            args=""
+            [ "$with_build" = "yes" ] && args="$args --data-urlencode build=8451100"
+            if [ "$with_app_headers" = "yes" ]; then
+              extra=(-H 'referer: https://big.bilibili.com/mobile/bigPoint/task' -H 'native_api_from: h5')
+            else
+              extra=()
+            fi
+            curl -s "$URL" \
+              -H "Cookie: $COOKIESTR" \
+              -H "User-Agent: $ua" \
+              "${extra[@]}" \
+              --data-urlencode 'taskCode=ogvwatchnew' \
+              --data-urlencode "csrf=$csrf" \
+              --data-urlencode "buvid=$buvid" \
+              --data-urlencode 'platform=android' \
+              --data-urlencode 'mobi_app=android' \
+              $args \
+              -o /tmp/r.json
+            printf '%-46s => %s\n' "$label" "$(jq -r '"code=\(.code) message=\(.message)"' /tmp/r.json 2>/dev/null || head -c 200 /tmp/r.json)"
+            sleep 3
+          }
+
+          echo "########## 对照实验 ##########"
+          call "C: APP UA + build + app headers"              "$UA_APP" yes yes
+          call "D: APP UA, no build"                          "$UA_APP" no  yes
+          call "E: WEB UA + build (项目当前形态)"              "$UA_WEB" yes no
+          call "F: WEB UA + build + app headers"              "$UA_WEB" yes yes
+          call "G: WEB UA, no build"                          "$UA_WEB" no  no
+
+      - name: Dump task structure
         env:
           COOKIESTR: ${{ secrets.COOKIESTR }}
         run: |
-          echo "=== A: 带 build（期望 code=0） ==="
-          curl -s 'https://api.bilibili.com/pgc/activity/score/task/receive/v2' \
-            -H "Cookie: $COOKIESTR" \
-            -H 'User-Agent: Mozilla/5.0 BiliDroid/8.45.1 (bbcallen@gmail.com) os/android model/SM-S9210 mobi_app/android build/8451100 channel/bili innerVer/8451110 osVer/12 network/2' \
-            -H 'referer: https://big.bilibili.com/mobile/bigPoint/task' \
-            -H 'native_api_from: h5' \
-            --data-urlencode 'taskCode=ogvwatchnew' \
-            --data-urlencode 'build=8451100' \
-            --data-urlencode "csrf=$BILI_CSRF" \
-            --data-urlencode "buvid=$BILI_BUVID" \
-            --data-urlencode 'platform=android' \
-            --data-urlencode 'mobi_app=android' \
-            --data-urlencode 'device=phone' \
-            --data-urlencode 'channel=bili' \
-            --data-urlencode 'disable_rcmd=0' \
-            -o /tmp/a.json
-          jq -r '"A: code=\(.code) message=\(.message)"' /tmp/a.json \
-            || { echo "A raw:"; head -c 500 /tmp/a.json; }
-          echo "--- 响应 data 顶层结构 ---"
-          jq -r '(.data // {}) | keys | join(", ")' /tmp/a.json 2>/dev/null || true
-
-      - name: Step 1 B - control without build
-        env:
-          COOKIESTR: ${{ secrets.COOKIESTR }}
-        run: |
-          echo "=== B: 不带 build（对照组，预期 6007000 或 -400） ==="
-          sleep 3
-          curl -s 'https://api.bilibili.com/pgc/activity/score/task/receive/v2' \
-            -H "Cookie: $COOKIESTR" \
-            -H 'User-Agent: Mozilla/5.0 BiliDroid/8.45.1 (bbcallen@gmail.com) os/android model/SM-S9210 mobi_app/android build/8451100 channel/bili innerVer/8451110 osVer/12 network/2' \
-            -H 'referer: https://big.bilibili.com/mobile/bigPoint/task' \
-            -H 'native_api_from: h5' \
-            --data-urlencode 'taskCode=ogvwatchnew' \
-            --data-urlencode "csrf=$BILI_CSRF" \
-            --data-urlencode "buvid=$BILI_BUVID" \
-            --data-urlencode 'platform=android' \
-            --data-urlencode 'mobi_app=android' \
-            -o /tmp/b.json
-          jq -r '"B: code=\(.code) message=\(.message)"' /tmp/b.json \
-            || { echo "B raw:"; head -c 500 /tmp/b.json; }
-
-      - name: Read current ogv task state
-        env:
-          COOKIESTR: ${{ secrets.COOKIESTR }}
-        run: |
-          echo "=== 任务列表中的 ogv 任务状态 ==="
+          set -u
           curl -s 'https://api.bilibili.com/x/vip_point/task/combine' \
             -H "Cookie: $COOKIESTR" \
             -H 'User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36' \
             -o /tmp/combine.json
-          jq -r '"combine: code=\(.code) point=\(.data.point_info.point // "n/a")"' /tmp/combine.json \
-            || { echo "combine raw:"; head -c 400 /tmp/combine.json; }
-          echo "--- 模块标题 ---"
-          jq -r '(.data.task_info.modules // [])[] | "\(.module_title)"' /tmp/combine.json 2>/dev/null || true
-          echo "--- 含 ogv 的任务项 ---"
-          jq -c '(.data.task_info.modules // [])[] | .module_title as $m | (.tasks // [])[] | select((.task_code // "") | test("ogv")) | {module:$m, task_code:.task_code, title:.title, state:.state, complete_times:.complete_times}' /tmp/combine.json 2>/dev/null || true
+          echo "combine: $(jq -r '"code=\(.code) point=\(.data.point_info.point // "n/a")"' /tmp/combine.json 2>/dev/null || head -c 200 /tmp/combine.json)"
+          echo "########## data 顶层 keys ##########"
+          jq -r '(.data // {}) | keys | join(", ")' /tmp/combine.json 2>/dev/null || true
+          echo "########## modules 结构 ##########"
+          jq -r '(.data.task_info.modules // [])[] | "MODULE [\(.module_title)] keys=\(keys|join(",")) task_count=\((.tasks // [])|length)"' /tmp/combine.json 2>/dev/null || true
+          echo "########## 任务明细（全部） ##########"
+          jq -r '(.data.task_info.modules // [])[] | .module_title as $m | (.tasks // [])[] | "\($m) | id=\(.task_id // "-") | code=\(.task_code // "-") | title=\(.title // .task_name // "-") | state=\(.state // "-") | times=\(.complete_times // "-")"' /tmp/combine.json 2>/dev/null || true
