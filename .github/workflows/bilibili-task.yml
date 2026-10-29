@@ -11,7 +11,11 @@
 #   would treat "&" as a background operator and silently drop the rest
 #
 # Scheduled run: Daily & VipBigPoint & MangaPrivilege & Manga & Silver2Coin,
-# once per day at ~10:00 Asia/Shanghai (inside the 08:00-16:00 window).
+# once per day at a RANDOM minute between 08:00 and 16:00 Asia/Shanghai.
+# cron cannot express "random", so the job is scheduled twice and the run
+# itself decides: a hash of today's date maps to a minute offset inside the
+# 8-hour window, and each cron entry sleeps until that minute (the entry
+# outside its half of the window exits immediately, so the task runs once).
 # (VipPrivilege omitted on purpose - Daily already claims the same benefits)
 
 name: bilibili-task
@@ -24,10 +28,13 @@ on:
         required: true
         default: "Daily"
   schedule:
-    # GitHub cron is always UTC. 02:00 UTC = 10:00 Asia/Shanghai, i.e. the
-    # middle of the 08:00-16:00 window, so a scheduler delay of up to a few
-    # hours (rare, but GitHub does queue cron jobs) still lands inside it.
-    - cron: "0 2 * * *"
+    # Two entries, both UTC (Asia/Shanghai = UTC+8), only one of them actually
+    # runs the task. 00:00 UTC covers 08:00-11:59 CST, 04:00 UTC covers
+    # 12:00-15:59 CST. Two entries instead of eight because the wait is done by
+    # sleeping: a single entry would have to sleep up to 8h to cover the window,
+    # and a GitHub job is killed at 6h. Splitting it caps the sleep at 4h.
+    - cron: "0 0 * * *"
+    - cron: "0 4 * * *"
 
 env:
   ASPNETCORE_ENVIRONMENT: ${{ secrets.ENV || 'Production' }}
@@ -66,9 +73,45 @@ env:
 jobs:
   run-task:
     runs-on: ubuntu-latest
+    # Worst case: 4h wait for the random slot + ~15min of tasks (VipBigPoint
+    # waits 610s for the ogv countdown). Default is 6h, stated here so a stuck
+    # run cannot leak a runner for longer than that.
+    timeout-minutes: 330
     steps:
       - name: Set time zone
         run: sudo timedatectl set-timezone 'Asia/Shanghai'
+
+      # Picks today's slot and waits for it. Two cron entries fire (00:00 and
+      # 04:00 UTC); the hash decides one target minute in 08:00-15:59 CST, and
+      # whichever entry owns that half of the window sleeps until it. The other
+      # one exits in seconds, which is what keeps this to one run per day.
+      # Sleeping rather than firing on 8 hourly crons also makes a delayed cron
+      # harmless: the run happens late instead of not at all.
+      - name: Wait for today's random slot
+        if: github.event_name == 'schedule'
+        env:
+          SLOT: ${{ github.event.schedule }}
+        run: |
+          now=$(date -u +%s)
+          day=$(date -u +%Y-%m-%d)
+          day_start=$(date -u -d "$day 00:00:00" +%s)
+          elapsed=$(( now - day_start ))
+
+          # 00:00 UTC = 08:00 CST, so the offset is also minutes into the window.
+          hash=$(printf '%s' "$day" | md5sum | cut -c1-8)
+          offset=$(( 16#$hash % 480 ))   # 0..479 -> 08:00..15:59
+          target=$(( offset * 60 ))
+
+          if { [ "$SLOT" = "0 0 * * *" ] && [ "$offset" -lt 240 ]; } ||
+             { [ "$SLOT" = "0 4 * * *" ] && [ "$offset" -ge 240 ]; }; then
+            wait=$(( target - elapsed ))
+            [ "$wait" -lt 0 ] && wait=0
+            echo "$day -> $(date -u -d "@$(( day_start + target ))" '+%H:%M') UTC (+8h = CST)"
+            echo "Sleeping ${wait}s (this cron entry owns today's slot)."
+            sleep "$wait"
+          else
+            echo "$day -> slot belongs to the other cron entry, nothing to do."
+          fi
 
       - name: Checkout
         uses: actions/checkout@v4
