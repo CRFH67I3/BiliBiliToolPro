@@ -1,0 +1,52 @@
+name: ogv-status
+
+# 一次性只读检查：查询大会员积分任务状态（不修改任何数据）
+# 用来确认「观看剧集内容」这次是否真的完成、积分是否到账
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  status:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Dump vip point task status
+        env:
+          COOKIESTR: ${{ secrets.COOKIESTR }}
+        run: |
+          set -u
+          csrf=$(printf '%s' "$COOKIESTR" | tr ';' '\n' | sed -n 's/^[[:space:]]*bili_jct=//p' | tr -d '\r\n')
+          buvid=$(printf '%s' "$COOKIESTR" | tr ';' '\n' | sed -n 's/^[[:space:]]*buvid3=//p' | tr -d '\r\n')
+          ts=$(date +%s)
+          echo "::add-mask::$csrf"
+          echo "::add-mask::$buvid"
+
+          UA='Mozilla/5.0 BiliDroid/8.45.1 (bbcallen@gmail.com) os/android model/SM-S9210 mobi_app/android build/8451100 channel/bili innerVer/8451110 osVer/12 network/2'
+
+          curl -s -G 'https://api.bilibili.com/x/vip_point/task/combine' \
+            --data-urlencode "buvid=$buvid" \
+            --data-urlencode "csrf=$csrf" \
+            --data-urlencode 'build=8451100' \
+            --data-urlencode 'mobi_app=android' \
+            --data-urlencode 'platform=android' \
+            --data-urlencode 'brand=Samsung' \
+            --data-urlencode 'channel=bili' \
+            --data-urlencode 'containerName=AbstractWebActivity' \
+            --data-urlencode 'device=phone' \
+            --data-urlencode "ts=$ts" \
+            -H "Cookie: $COOKIESTR" \
+            -H "User-Agent: $UA" \
+            -H 'referer: https://big.bilibili.com/mobile/bigPoint/task' \
+            -o /tmp/combine.json
+
+          echo "code=$(jq -r '.code' /tmp/combine.json 2>/dev/null) message=$(jq -r '.message' /tmp/combine.json 2>/dev/null)"
+          echo "--- 总积分 ---"
+          jq -r '.data.task_info | "total_point=\(.total_point // "-") score=\(.score // "-")"' /tmp/combine.json 2>/dev/null || true
+          echo "--- 所有任务明细（含 ogv）---"
+          jq -r '(.data.task_info.modules // [])[] | (.module_title // "?") as $m | .common_task_item[]? | "\($m) | \(.title) | code=\(.task_code) state=\(.state) times=\(.complete_times)/\(.max_times)"' /tmp/combine.json 2>/dev/null || true
+          echo "--- 原始顶层结构 ---"
+          jq -r '.data | keys | join(", ")' /tmp/combine.json 2>/dev/null || head -c 400 /tmp/combine.json
