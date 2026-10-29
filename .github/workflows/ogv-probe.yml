@@ -1,100 +1,74 @@
 name: ogv-probe
 
-# 一次性探测：定位 6007000 的确切成因 + 探测第 2 步 material/receive
+# 一次性探测：大会员积分「观看剧集内容」任务
+# 目的：验证 material/receive 是否返回 task_id/token，以及 complete 是否必须 access_key
+# 用完即可删除本文件，与主任务无关
+
 on:
   workflow_dispatch:
+    inputs:
+      epid:
+        description: "ep_id（留空则用默认）"
+        required: false
+        default: "321808"
+      seasonid:
+        description: "season_id"
+        required: false
+        default: "33378"
+      wait_seconds:
+        description: "complete 前等待秒数（倒计时 600 秒）"
+        required: false
+        default: "610"
+
+permissions:
+  contents: read
 
 jobs:
   probe:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 40
     steps:
-      - name: Isolate the missing header
+      - name: Step A - receive + material/receive 完整返回
         env:
           COOKIESTR: ${{ secrets.COOKIESTR }}
+          EPID: ${{ github.event.inputs.epid }}
+          SEASONID: ${{ github.event.inputs.seasonid }}
         run: |
           set -u
+          if [ -z "${COOKIESTR:-}" ]; then echo "::error::COOKIESTR secret 未配置"; exit 1; fi
+
           csrf=$(printf '%s' "$COOKIESTR" | tr ';' '\n' | sed -n 's/^[[:space:]]*bili_jct=//p' | tr -d '\r\n')
           buvid=$(printf '%s' "$COOKIESTR" | tr ';' '\n' | sed -n 's/^[[:space:]]*buvid3=//p' | tr -d '\r\n')
-          echo "::add-mask::$csrf"; echo "::add-mask::$buvid"
-
-          UA_WEB='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-          URL='https://api.bilibili.com/pgc/activity/score/task/receive/v2'
-
-          call() {
-            label="$1"; with_ref="$2"; with_native="$3"
-            hdr=()
-            [ "$with_ref" = "yes" ] && hdr+=(-H 'referer: https://big.bilibili.com/mobile/bigPoint/task')
-            [ "$with_native" = "yes" ] && hdr+=(-H 'native_api_from: h5')
-            curl -s "$URL" \
-              -H "Cookie: $COOKIESTR" \
-              -H "User-Agent: $UA_WEB" \
-              "${hdr[@]}" \
-              --data-urlencode 'taskCode=ogvwatchnew' \
-              --data-urlencode 'build=8451100' \
-              --data-urlencode "csrf=$csrf" \
-              --data-urlencode "buvid=$buvid" \
-              --data-urlencode 'platform=android' \
-              --data-urlencode 'mobi_app=android' \
-              -o /tmp/x.json
-            printf '%-52s => %s\n' "$label" "$(jq -r '"code=\(.code) message=\(.message)"' /tmp/x.json 2>/dev/null || head -c 200 /tmp/x.json)"
-            sleep 3
-          }
-
-          echo "########## 请求头隔离实验（全部用网页 UA + build） ##########"
-          call "H: 仅 referer（项目当前形态）"        yes no
-          call "I: 仅 native_api_from"                no  yes
-          call "J: referer + native_api_from"         yes yes
-          call "K: 都不带"                            no  no
-
-      - name: Dump task structure and point
-        env:
-          COOKIESTR: ${{ secrets.COOKIESTR }}
-        run: |
-          set -u
-          curl -s 'https://api.bilibili.com/x/vip_point/task/combine' \
-            -H "Cookie: $COOKIESTR" \
-            -H 'User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36' \
-            -o /tmp/combine.json
-          echo "combine: $(jq -r '"code=\(.code) point=\(.data.point_info.point // "n/a")"' /tmp/combine.json 2>/dev/null || head -c 200 /tmp/combine.json)"
-          echo "########## common_task_item 类型 ##########"
-          jq -r '(.data.task_info.modules // [])[] | "\(.module_title): type=\(.common_task_item|type)"' /tmp/combine.json 2>/dev/null || true
-          echo "########## 日常任务明细 ##########"
-          jq -r '(.data.task_info.modules // [])[] | select(.module_title|test("日常")) | .common_task_item[]? | "id=\(.task_id // "-") code=\(.task_code // "-") title=\(.title // "-") state=\(.state // "-") times=\(.complete_times // "-")"' /tmp/combine.json 2>/dev/null || true
-          echo "########## 日常模块原始结构（截断 1500 字符） ##########"
-          jq -c '(.data.task_info.modules // [])[] | select(.module_title|test("日常")) | .common_task_item[0]' /tmp/combine.json 2>/dev/null | head -c 1500 || true
-          echo
-
-      - name: Resolve ep_id from season 33378
-        run: |
-          set -u
-          curl -s 'https://api.bilibili.com/pgc/view/web/season?season_id=33378' \
-            -H 'User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36' \
-            -o /tmp/season.json
-          echo "season: $(jq -r '"code=\(.code) title=\(.result.season_title // "n/a") eps=\((.result.episodes // [])|length)"' /tmp/season.json 2>/dev/null || head -c 200 /tmp/season.json)"
-          jq -r '(.result.episodes // [])[0] | "ep_id=\(.id) aid=\(.aid) title=\(.title) long_title=\(.long_title)"' /tmp/season.json 2>/dev/null || true
-          jq -r '(.result.episodes // [])[0].id // ""' /tmp/season.json > /tmp/epid.txt 2>/dev/null || true
-          echo "resolved ep_id=$(cat /tmp/epid.txt)"
-          echo "EPID=$(cat /tmp/epid.txt)" >> "$GITHUB_ENV"
-
-      - name: Step 2 material/receive without access_key
-        env:
-          COOKIESTR: ${{ secrets.COOKIESTR }}
-        run: |
-          set -u
-          csrf=$(printf '%s' "$COOKIESTR" | tr ';' '\n' | sed -n 's/^[[:space:]]*bili_jct=//p' | tr -d '\r\n')
-          buvid=$(printf '%s' "$COOKIESTR" | tr ';' '\n' | sed -n 's/^[[:space:]]*buvid3=//p' | tr -d '\r\n')
+          mid=$(printf '%s' "$COOKIESTR" | tr ';' '\n' | sed -n 's/^[[:space:]]*DedeUserID=//p' | tr -d '\r\n')
           echo "::add-mask::$csrf"
-          ep="${EPID:-}"
-          if [ -z "$ep" ]; then echo "::warning::ep_id not resolved, skip step 2"; exit 0; fi
-          echo "=== 第 2 步：material/receive（不带 access_key）ep_id=$ep season_id=33378 ==="
-          curl -s 'https://api.bilibili.com/pgc/activity/deliver/material/receive' \
+          echo "::add-mask::$buvid"
+          echo "csrf_len=${#csrf} buvid_len=${#buvid} mid=$mid"
+
+          UA='Mozilla/5.0 BiliDroid/8.45.1 (bbcallen@gmail.com) os/android model/SM-S9210 mobi_app/android build/8451100 channel/bili innerVer/8451110 osVer/12 network/2'
+
+          echo "=== 1) receive/v2 taskCode=ogvwatchnew ==="
+          curl -s 'https://api.bilibili.com/pgc/activity/score/task/receive/v2' \
             -H "Cookie: $COOKIESTR" \
-            -H 'User-Agent: Mozilla/5.0 BiliDroid/8.45.1 (bbcallen@gmail.com) os/android model/SM-S9210 mobi_app/android build/8451100 channel/bili innerVer/8451110 osVer/12 network/2' \
+            -H "User-Agent: $UA" \
             -H 'referer: https://big.bilibili.com/mobile/bigPoint/task' \
             -H 'native_api_from: h5' \
-            --data-urlencode "ep_id=$ep" \
-            --data-urlencode 'season_id=33378' \
+            --data-urlencode 'taskCode=ogvwatchnew' \
+            --data-urlencode 'build=8451100' \
+            --data-urlencode 'mobi_app=android' \
+            --data-urlencode 'platform=android' \
+            --data-urlencode "csrf=$csrf" \
+            --data-urlencode "buvid=$buvid" \
+            -o /tmp/recv.json
+          echo "receive => $(jq -r '"code=\(.code) message=\(.message)"' /tmp/recv.json 2>/dev/null || head -c 200 /tmp/recv.json)"
+
+          echo "=== 2) material/receive ep_id=$EPID season_id=$SEASONID（不带 access_key）==="
+          curl -s 'https://api.bilibili.com/pgc/activity/deliver/material/receive' \
+            -H "Cookie: $COOKIESTR" \
+            -H "User-Agent: $UA" \
+            -H 'referer: https://big.bilibili.com/mobile/bigPoint/task' \
+            -H 'native_api_from: h5' \
+            --data-urlencode "ep_id=$EPID" \
+            --data-urlencode "season_id=$SEASONID" \
             --data-urlencode 'build=8451100' \
             --data-urlencode 'mobi_app=android' \
             --data-urlencode 'platform=android' \
@@ -107,8 +81,139 @@ jobs:
             --data-urlencode "buvid=$buvid" \
             --data-urlencode "csrf=$csrf" \
             -o /tmp/mat.json
-          echo "material/receive => $(jq -r '"code=\(.code) message=\(.message)"' /tmp/mat.json 2>/dev/null || head -c 300 /tmp/mat.json)"
-          echo "--- data 结构 ---"
-          jq -r '(.data // {}) | keys | join(", ")' /tmp/mat.json 2>/dev/null || true
-          jq -c '.data' /tmp/mat.json 2>/dev/null | head -c 600 || true
+          echo "material => $(jq -r '"code=\(.code) message=\(.message)"' /tmp/mat.json 2>/dev/null || head -c 200 /tmp/mat.json)"
+          echo "--- 完整 data（不截断）---"
+          jq -c '.data' /tmp/mat.json || cat /tmp/mat.json
           echo
+          echo "--- watch_count_down_cfg 全部字段 ---"
+          jq -r '(.data.watch_count_down_cfg // {}) | to_entries[] | "\(.key) = \(.value)"' /tmp/mat.json || true
+
+          tid=$(jq -r '.data.watch_count_down_cfg.task_id // empty' /tmp/mat.json 2>/dev/null)
+          tok=$(jq -r '.data.watch_count_down_cfg.token // empty' /tmp/mat.json 2>/dev/null)
+          echo "extracted task_id=[$tid] token_len=${#tok}"
+          if [ -n "$tid" ]; then
+            echo "TASK_ID=$tid" >> "$GITHUB_ENV"
+            echo "TASK_TOKEN=$tok" >> "$GITHUB_ENV"
+            echo "::add-mask::$tok"
+            echo "MID=$mid" >> "$GITHUB_ENV"
+            echo "BUVID=$buvid" >> "$GITHUB_ENV"
+            echo "READY=1" >> "$GITHUB_ENV"
+          else
+            echo "READY=0" >> "$GITHUB_ENV"
+            echo "::warning::material/receive 未返回 task_id —— 说明必须带 access_key（需要 TV 扫码）"
+          fi
+
+      - name: Step B - 等待倒计时
+        if: env.READY == '1'
+        env:
+          WAIT: ${{ github.event.inputs.wait_seconds }}
+        run: echo "waiting ${WAIT}s ..." && sleep "$WAIT"
+
+      - name: Step C - deliver/task/complete（App 双重签名，不带 access_key）
+        if: env.READY == '1'
+        env:
+          COOKIESTR: ${{ secrets.COOKIESTR }}
+        run: |
+          python3 - <<'PY'
+          import hashlib, os, time, urllib.parse, urllib.request, json
+
+          APPKEY = '1d8b6e7d45233436'
+          APPSEC = '560c52ccd288fed045859ed18bffd973'
+          UA = ('Mozilla/5.0 BiliDroid/8.45.1 (bbcallen@gmail.com) os/android '
+                'model/SM-S9210 mobi_app/android build/8451100 channel/bili '
+                'innerVer/8451110 osVer/12 network/2')
+          STATS = '{"appId":1,"platform":3,"version":"8.45.1","abtest":""}'
+
+          cookie = os.environ['COOKIESTR']
+          task_id = os.environ['TASK_ID']
+          token = os.environ['TASK_TOKEN']
+          mid = os.environ.get('MID', '')
+          buvid = os.environ.get('BUVID', '')
+
+          ts = str(int(time.time()))
+          ms = str(int(time.time() * 1000))
+
+          base = {
+              'appkey': APPKEY,
+              'build': '8451100',
+              'c_locale': 'zh_CN',
+              'channel': 'bili',
+              'disable_rcmd': '0',
+              'mobi_app': 'android',
+              'platform': 'android',
+              's_locale': 'zh_CN',
+              'statistics': STATS,
+              'task_id': task_id,
+              'timestamp': ms,
+              'token': token,
+              'ts': ts,
+          }
+
+          def sorted_qs(d):
+              return '&'.join(
+                  '%s=%s' % (urllib.parse.quote(str(k), safe=''), urllib.parse.quote(str(d[k]), safe=''))
+                  for k in sorted(d)
+              )
+
+          # task_sign: 排除 task_sign 与 sign 后签名
+          p = dict(base)
+          p.pop('sign', None)
+          p.pop('task_sign', None)
+          task_sign = hashlib.md5((sorted_qs(p) + APPSEC).encode()).hexdigest()
+
+          # sign: 带上 task_sign 再签一次
+          p['task_sign'] = task_sign
+          sign = hashlib.md5((sorted_qs(p) + APPSEC).encode()).hexdigest()
+          p['sign'] = sign
+
+          print('task_id=%s token_len=%d' % (task_id, len(token)))
+          print('task_sign=%s' % task_sign)
+          print('sign=%s' % sign)
+          print('sorted(before task_sign): %s' % sorted_qs({k: v for k, v in base.items()}))
+
+          body = urllib.parse.urlencode(p).encode()
+          req = urllib.request.Request(
+              'https://api.bilibili.com/pgc/activity/deliver/task/complete',
+              data=body,
+              headers={
+                  'User-Agent': UA,
+                  'Content-Type': 'application/x-www-form-urlencoded',
+                  'Cookie': cookie,
+                  'referer': 'https://big.bilibili.com/mobile/bigPoint/task',
+                  'native_api_from': 'h5',
+                  'buvid': buvid,
+                  'x-bili-mid': mid,
+                  'env': 'prod',
+                  'app-key': 'android64',
+                  'bili-http-engine': 'cronet',
+              },
+          )
+          try:
+              with urllib.request.urlopen(req, timeout=20) as r:
+                  raw = r.read().decode()
+                  print('HTTP', r.status)
+                  print('RAW', raw)
+          except Exception as e:
+              print('REQUEST FAILED', type(e).__name__, e)
+          PY
+
+      - name: Step D - 复查任务状态
+        if: always()
+        env:
+          COOKIESTR: ${{ secrets.COOKIESTR }}
+        run: |
+          set -u
+          csrf=$(printf '%s' "$COOKIESTR" | tr ';' '\n' | sed -n 's/^[[:space:]]*bili_jct=//p' | tr -d '\r\n')
+          buvid=$(printf '%s' "$COOKIESTR" | tr ';' '\n' | sed -n 's/^[[:space:]]*buvid3=//p' | tr -d '\r\n')
+          echo "::add-mask::$csrf"
+          curl -s 'https://api.bilibili.com/pgc/activity/score/task/combine' \
+            -H "Cookie: $COOKIESTR" \
+            -H 'User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36' \
+            -H 'referer: https://big.bilibili.com/mobile/bigPoint/task' \
+            -H 'native_api_from: h5' \
+            --data-urlencode "csrf=$csrf" \
+            --data-urlencode "buvid=$buvid" \
+            -o /tmp/after.json
+          echo "积分与任务状态："
+          jq -r '"total_point=\(.data.task_info.total_point // "-") score=\(.data.task_info.score // "-")"' /tmp/after.json 2>/dev/null || true
+          jq -r '(.data.task_info.modules // [])[] | .common_task_item[]? | "\(.title) | code=\(.task_code) state=\(.state) times=\(.complete_times)"' /tmp/after.json 2>/dev/null || true
