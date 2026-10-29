@@ -1,0 +1,98 @@
+# Bilibili task runner (manual + scheduled)
+# Revived from platforms/gitHubActions/bak/bilibili-daily-task.yml:
+# - .NET 10 (was 6)
+# - actions/checkout@v4, setup-dotnet@v4 (was v2/v1)
+# - dropped broken pre-check job that referenced undefined IsOpenDailyTask
+# - dropped deprecated ::set-output syntax
+
+name: bilibili-task
+
+on:
+  workflow_dispatch:
+    inputs:
+      tasks:
+        description: "Tasks to run (e.g. Daily, LiveLottery, UnfollowBatched, Test)"
+        required: true
+        default: "Daily"
+  schedule:
+    # 16:00 UTC = 00:00 Asia/Shanghai
+    - cron: "0 16 * * *"
+
+env:
+  ASPNETCORE_ENVIRONMENT: ${{ secrets.ENV }}
+  Ray_BiliBiliCookies__1: ${{ secrets.COOKIESTR }}
+  Ray_BiliBiliCookies__2: ${{ secrets.COOKIESTR2 }}
+  Ray_BiliBiliCookies__3: ${{ secrets.COOKIESTR3 }}
+  # Push channels (optional)
+  Ray_Serilog__WriteTo__3__Args__botToken: ${{ secrets.PUSHTGTOKEN }}
+  Ray_Serilog__WriteTo__3__Args__chatId: ${{ secrets.PUSHTGCHATID }}
+  Ray_Serilog__WriteTo__3__Args__restrictedToMinimumLevel: ${{ secrets.PUSHTGLEVEL }}
+  Ray_Serilog__WriteTo__4__Args__webHookUrl: ${{ secrets.PUSHWEIXINURL }}
+  Ray_Serilog__WriteTo__4__Args__restrictedToMinimumLevel: ${{ secrets.PUSHWEIXINLEVEL }}
+  Ray_Serilog__WriteTo__5__Args__restrictedToMinimumLevel: ${{ secrets.PUSHDINGLEVEL }}
+  Ray_Serilog__WriteTo__6__Args__scKey: ${{ secrets.PUSHSCKEY }}
+  Ray_Serilog__WriteTo__6__Args__turboScKey: ${{ secrets.PUSHSERVERTSCKEY }}
+  Ray_Serilog__WriteTo__6__Args__restrictedToMinimumLevel: ${{ secrets.PUSHSERVERLEVEL }}
+  Ray_Serilog__WriteTo__9__Args__token: ${{ secrets.PUSHPLUSTOKEN }}
+  Ray_Serilog__WriteTo__9__Args__topic: ${{ secrets.PUSHPLUSTOPIC }}
+  Ray_Serilog__WriteTo__9__Args__channel: ${{ secrets.PUSHPLUSCHANNEL }}
+  Ray_Serilog__WriteTo__9__Args__webhook: ${{ secrets.PUSHPLUSWEBHOOK }}
+  Ray_Serilog__WriteTo__9__Args__restrictedToMinimumLevel: ${{ secrets.PUSHPLUSLEVEL }}
+  # Security
+  Ray_Security__IsSkipDailyTask: ${{ secrets.ISSKIPDAILYTASK }}
+  Ray_Security__IntervalSecondsBetweenRequestApi: ${{ secrets.INTERVALSECONDSBETWEENREQUESTAPI }}
+  Ray_Security__IntervalMethodTypes: ${{ secrets.INTERVALMETHODTYPES }}
+  Ray_Security__UserAgent: ${{ secrets.USERAGENT }}
+  Ray_Security__WebProxy: ${{ secrets.WEBPROXY }}
+  Ray_Security__RandomSleepMaxMin: ${{ secrets.RANDOMSLEEPMAXMIN }}
+  # Daily task config
+  Ray_DailyTaskConfig__NumberOfCoins: ${{ secrets.NUMBEROFCOINS }}
+  Ray_DailyTaskConfig__SaveCoinsWhenLv6: ${{ secrets.SAVECOINSWHENLV6 }}
+  Ray_DailyTaskConfig__SelectLike: ${{ secrets.SELECTLIKE }}
+  Ray_DailyTaskConfig__SupportUpIds: ${{ secrets.SUPPORTUPIDS }}
+  Ray_DailyTaskConfig__DayOfAutoCharge: ${{ secrets.DAYOFAUTOCHARGE }}
+  Ray_DailyTaskConfig__AutoChargeUpId: ${{ secrets.AUTOCHARGEUPID }}
+  Ray_DailyTaskConfig__ChargeComment: ${{ secrets.CHARGECOMMENT }}
+  Ray_DailyTaskConfig__DayOfReceiveVipPrivilege: ${{ secrets.DAYOFRECEIVEVIPPRIVILEGE }}
+  Ray_DailyTaskConfig__DayOfExchangeSilver2Coin: ${{ secrets.DAYOFEXCHANGESILVER2COIN }}
+  Ray_DailyTaskConfig__DevicePlatform: ${{ secrets.DEVICEPLATFORM }}
+  Ray_Serilog__WriteTo__0__Args__restrictedToMinimumLevel: ${{ secrets.CONSOLELOGLEVEL }}
+  Ray_Serilog__WriteTo__0__Args__outputTemplate: ${{ secrets.CONSOLELOGTEMPLATE }}
+
+jobs:
+  run-task:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Set time zone
+        run: sudo timedatectl set-timezone 'Asia/Shanghai'
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+
+      # DingTalk webhook is assembled from token + sign secret.
+      # The sink adds timestamp/sign automatically when the URL contains "secret=".
+      - name: Configure DingTalk push
+        env:
+          DING_TOKEN: ${{ secrets.PUSHDINGTOKEN }}
+          DING_SECRET: ${{ secrets.PUSHDINGSECRET }}
+        run: |
+          if [ -n "$DING_TOKEN" ] && [ -n "$DING_SECRET" ]; then
+            echo "RAY_SERILOG__WRITETO__5__ARGS__WEBHOOKURL=https://oapi.dingtalk.com/robot/send?access_token=${DING_TOKEN}&secret=${DING_SECRET}" >> "$GITHUB_ENV"
+          else
+            echo "DingTalk secrets not set, skipping push configuration"
+          fi
+
+      - name: Run task (manual input)
+        if: github.event_name == 'workflow_dispatch'
+        working-directory: ./src/Ray.BiliBiliTool.Console
+        run: dotnet run -- --runTasks=${{ github.event.inputs.tasks }}
+
+      - name: Run daily task (scheduled)
+        if: github.event_name == 'schedule'
+        working-directory: ./src/Ray.BiliBiliTool.Console
+        run: dotnet run -- --runTasks=Daily
