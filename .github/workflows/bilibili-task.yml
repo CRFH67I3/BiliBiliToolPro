@@ -7,6 +7,11 @@
 # - every optional env mapping now has a fallback default: an undefined secret
 #   expands to "", and an empty value OVERRIDES appsettings.json (Serilog then
 #   fails parsing "" into the LogEventLevel enum -> exit code 134)
+# - "&"-joined task lists are passed through a quoted env var: unquoted, bash
+#   would treat "&" as a background operator and silently drop the rest
+#
+# Scheduled run: Daily & VipBigPoint & MangaPrivilege & Manga & Silver2Coin
+# (VipPrivilege omitted on purpose - Daily already claims the same benefits)
 
 name: bilibili-task
 
@@ -14,7 +19,7 @@ on:
   workflow_dispatch:
     inputs:
       tasks:
-        description: "Tasks to run (e.g. Daily, LiveLottery, UnfollowBatched, Test)"
+        description: "Tasks to run, join multiple with &. e.g. Daily&VipBigPoint"
         required: true
         default: "Daily"
   schedule:
@@ -83,12 +88,23 @@ jobs:
             echo "DingTalk secrets not set, skipping push configuration"
           fi
 
+      # Tasks are joined with "&", which bash treats as a background operator.
+      # Always pass the value through a quoted env var, never inline unquoted.
       - name: Run task (manual input)
         if: github.event_name == 'workflow_dispatch'
         working-directory: ./src/Ray.BiliBiliTool.Console
-        run: dotnet run -- --runTasks=${{ github.event.inputs.tasks }}
+        env:
+          TASKS: ${{ github.event.inputs.tasks }}
+        run: dotnet run -- --runTasks="$TASKS"
 
-      - name: Run daily task (scheduled)
+      # Scheduled order matters: Daily runs first so that VipBigPoint sees the
+      # watch/share status already completed and skips its own video pass.
+      # VipPrivilege is intentionally absent: Daily already calls the exact same
+      # VipPrivilegeDomainService.ReceiveVipPrivilege (same IsEnable switch), so
+      # running it separately would only return "already claimed" twice a day.
+      - name: Run scheduled tasks
         if: github.event_name == 'schedule'
         working-directory: ./src/Ray.BiliBiliTool.Console
-        run: dotnet run -- --runTasks=Daily
+        env:
+          TASKS: "Daily&VipBigPoint&MangaPrivilege&Manga&Silver2Coin"
+        run: dotnet run -- --runTasks="$TASKS"
