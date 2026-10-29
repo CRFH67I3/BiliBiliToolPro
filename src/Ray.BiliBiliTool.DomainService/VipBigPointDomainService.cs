@@ -259,7 +259,137 @@ public class VipBigPointDomainService(
         return false;
     }
 
+    /// <summary>
+    /// 观看剧集内容任务：领取 → 开始观看 → 等待倒计时 → 上报完成 → 复查状态
+    /// </summary>
+    /// <remarks>
+    /// 该任务不能只调 complete 接口：服务端要求先 material/receive 拿到 task_id/token，
+    /// 等满服务端下发的倒计时（10 分钟）后再带上双重签名上报，否则状态不会推进。
+    /// 上报接口常返回 504 等异常，但任务实际可能已完成，因此以 combine 接口的任务状态为准。
+    /// </remarks>
+    public async Task<bool> OgvWatchAsync(VipBigPointCombine combine, BiliCookie ck)
+    {
+        const string moduleCode = "日常任务";
+        const string taskCode = "ogvwatchnew";
+
+        var taskNow = FindTask(combine, moduleCode, taskCode);
+        if (taskNow == null)
+        {
+            logger.LogInformation("任务失效");
+            return false;
+        }
+
+        if (taskNow.state == 3)
+        {
+            logger.LogInformation("已完成，跳过");
+            return true;
+        }
+
+        if (taskNow.state == 0)
+        {
+            logger.LogInformation("开始领取任务");
+            await TryReceive(taskCode, ck);
+        }
+
+        var (epId, seasonId) = await PickBangumiEpAsync(ck);
+        if (epId <= 0)
+        {
+            logger.LogInformation(
+                "未取到可观看的剧集，跳过（请检查 VipBigPointConfig:ViewBangumis）"
+            );
+            return false;
+        }
+
+        var start = await apiApi.StartOgvWatchAsync(
+            new StartOgvWatchRequest(epId, seasonId, ck.BiliJct, ck.Buvid),
+            ck.ToString()
+        );
+        var cfg = start.Data?.watch_count_down_cfg;
+        if (
+            start.Code != 0
+            || cfg is null
+            || string.IsNullOrEmpty(cfg.task_id)
+            || string.IsNullOrEmpty(cfg.token)
+        )
+        {
+            logger.LogInformation("开始观看失败：{msg}", start.ToJsonStr());
+            return false;
+        }
+
+        int waitSeconds =
+            cfg.milliseconds > 0
+                ? (int)Math.Ceiling(cfg.milliseconds / 1000d) + 10
+                : _vipBigPointOptions.OgvWatchWaitSeconds;
+        logger.LogInformation(
+            "已开始观看：ep_id={ep}，task_id={id}，等待 {sec} 秒后上报",
+            epId,
+            cfg.task_id,
+            waitSeconds
+        );
+
+        if (waitSeconds > 0)
+        {
+            await Task.Delay(TimeSpan.FromSeconds(waitSeconds));
+        }
+
+        string? error = null;
+        try
+        {
+            var complete = await apiApi.CompleteOgvWatchAsync(
+                new CompleteOgvWatchRequest(cfg.task_id, cfg.token),
+                ck.ToString()
+            );
+            logger.LogInformation(
+                "上报完成返回：code={code} {message}",
+                complete.Code,
+                complete.Message
+            );
+        }
+        catch (Exception e)
+        {
+            // B 站该接口常见 504/-400，但服务端可能已记账，不能据此判定失败
+            error = e.Message;
+            logger.LogInformation("上报完成返回异常（不一定是失败）：{msg}", e.Message);
+        }
+
+        var after = await GetCombineAsync(ck);
+        var taskAfter = FindTask(after, moduleCode, taskCode);
+        bool success = taskAfter is { state: 3, complete_times: >= 1 };
+        logger.LogInformation("确认：{re}", success ? "成功，大积分 +10" : "失败");
+        if (!success && error != null)
+        {
+            logger.LogInformation("失败信息：{msg}", error);
+        }
+
+        return success;
+    }
+
     #region private
+
+    private static CommonTaskItem? FindTask(
+        VipBigPointCombine combine,
+        string moduleCode,
+        string taskCode
+    ) =>
+        combine
+            .Task_info.Modules.FirstOrDefault(x => x.module_title == moduleCode)
+            ?.common_task_item.FirstOrDefault(x => x.task_code == taskCode);
+
+    /// <summary>
+    /// 从配置的番剧列表里随机取一集的 ep_id
+    /// </summary>
+    private async Task<(long EpId, long SeasonId)> PickBangumiEpAsync(BiliCookie ck)
+    {
+        if (_vipBigPointOptions.ViewBangumiList.Count == 0)
+            return (0, 0);
+
+        long randomSsid = _vipBigPointOptions.ViewBangumiList[
+            new Random().Next(0, _vipBigPointOptions.ViewBangumiList.Count)
+        ];
+
+        var res = await GetBangumi(randomSsid, ck);
+        return res is null ? (0, 0) : (res.Value.Item2, randomSsid);
+    }
 
     /// <summary>
     /// 领取任务

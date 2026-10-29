@@ -257,13 +257,7 @@ public class VipBigPointAppService(
         CancellationToken cancellationToken = default
     )
     {
-        await vipBigPointDomainService.ReceiveAndCompleteAsync(
-            combine,
-            "日常任务",
-            "ogvwatchnew",
-            ck,
-            async (_, _) => await vipBigPointDomainService.CompleteV2Async("ogvwatchnew", ck)
-        );
+        await vipBigPointDomainService.OgvWatchAsync(combine, ck);
     }
 
     [TaskInterceptor("日常7：购买影片", TaskLevel.Three, rethrowWhenException: false)]

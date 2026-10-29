@@ -28,4 +28,9 @@ public interface IVipBigPointDomainService : IDomainService
     Task<bool> CompleteViewVipMallAsync(string taskCode, BiliCookie ck);
 
     Task<bool> CompleteV2Async(string taskCode, BiliCookie ck);
+
+    /// <summary>
+    /// 观看剧集内容任务完整链路（领取 → 开始观看 → 等待 → 上报完成 → 复查）
+    /// </summary>
+    Task<bool> OgvWatchAsync(VipBigPointCombine combine, BiliCookie ck);
 }

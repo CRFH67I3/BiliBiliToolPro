@@ -411,20 +411,24 @@ public interface IApiApi
     );
 
     /// <summary>
-    /// 开始观看剧集任务
-    /// NOTE: HTTP verb unknown — stub method without Refit verb attribute
+    /// 开始观看剧集任务（大会员积分-日常任务-观看剧集内容，第 2 步）
     /// </summary>
+    /// <remarks>返回 data.watch_count_down_cfg.task_id 与 token，供上报完成使用</remarks>
+    [Headers("Referer: https://big.bilibili.com/mobile/bigPoint/task", "native_api_from: h5")]
+    [Post("/pgc/activity/deliver/material/receive")]
     Task<BiliApiResponse<StartOgvWatchResponse>> StartOgvWatchAsync(
-        StartOgvWatchRequest request,
+        [Body(BodySerializationMethod.UrlEncoded)] StartOgvWatchRequest request,
         [Header("Cookie")] string ck
     );
 
     /// <summary>
-    /// 完成观看剧集任务
-    /// NOTE: HTTP verb unknown — stub method without Refit verb attribute
+    /// 上报观看剧集任务完成（大会员积分-日常任务-观看剧集内容，第 3 步）
     /// </summary>
+    /// <remarks>需要 App 双重签名；同一 task_id 只能成功上报一次</remarks>
+    [Headers("Referer: https://big.bilibili.com/mobile/bigPoint/task", "native_api_from: h5")]
+    [Post("/pgc/activity/deliver/task/complete")]
     Task<BiliApiResponse> CompleteOgvWatchAsync(
-        CompleteOgvWatchRequest request,
+        [Body(BodySerializationMethod.UrlEncoded)] CompleteOgvWatchRequest request,
         [Header("Cookie")] string ck
     );
 

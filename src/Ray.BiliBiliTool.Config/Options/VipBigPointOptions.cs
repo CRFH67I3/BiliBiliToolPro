@@ -6,6 +6,12 @@ public class VipBigPointOptions : BaseConfigOptions
 
     public string? ViewBangumis { get; set; }
 
+    /// <summary>
+    /// 观看剧集任务开始后需等待的秒数。
+    /// 服务端倒计时固定下发 600 秒，返回里没有倒计时信息时用该值兜底。
+    /// </summary>
+    public int OgvWatchWaitSeconds { get; set; } = 610;
+
     public List<long> ViewBangumiList
     {
         get
@@ -32,6 +38,7 @@ public class VipBigPointOptions : BaseConfigOptions
             new Dictionary<string, string>
             {
                 { $"{SectionName}:{nameof(ViewBangumis)}", ViewBangumis ?? "" },
+                { $"{SectionName}:{nameof(OgvWatchWaitSeconds)}", OgvWatchWaitSeconds.ToString() },
             }
         );
     }
