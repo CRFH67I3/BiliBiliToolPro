@@ -1,4 +1,5 @@
 ﻿using System.Reflection;
+using System.Runtime.Loader;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -13,6 +14,12 @@ public class Program
 {
     public static async Task<int> Main(string[] args)
     {
+        // Ray.Serilog.Sinks.* 0.1.6 is compiled against Ray.Infrastructure 0.0.26,
+        // but this project now ships 0.1.1. Without this redirect the push sinks fail
+        // at runtime with FileLoadException when they flush on shutdown.
+        AssemblyLoadContext.Default.Resolving += (_, name) =>
+            name.Name == "Ray.Infrastructure" ? Assembly.Load(name.Name) : null;
+
         System.Console.CancelKeyPress += (sender, eventArgs) =>
         {
             eventArgs.Cancel = true;
