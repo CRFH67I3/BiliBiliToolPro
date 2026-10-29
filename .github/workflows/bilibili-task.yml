@@ -10,7 +10,8 @@
 # - "&"-joined task lists are passed through a quoted env var: unquoted, bash
 #   would treat "&" as a background operator and silently drop the rest
 #
-# Scheduled run: Daily & VipBigPoint & MangaPrivilege & Manga & Silver2Coin
+# Scheduled run: Daily & VipBigPoint & MangaPrivilege & Manga & Silver2Coin,
+# once per day at ~10:00 Asia/Shanghai (inside the 08:00-16:00 window).
 # (VipPrivilege omitted on purpose - Daily already claims the same benefits)
 
 name: bilibili-task
@@ -23,8 +24,10 @@ on:
         required: true
         default: "Daily"
   schedule:
-    # 16:00 UTC = 00:00 Asia/Shanghai
-    - cron: "0 16 * * *"
+    # GitHub cron is always UTC. 02:00 UTC = 10:00 Asia/Shanghai, i.e. the
+    # middle of the 08:00-16:00 window, so a scheduler delay of up to a few
+    # hours (rare, but GitHub does queue cron jobs) still lands inside it.
+    - cron: "0 2 * * *"
 
 env:
   ASPNETCORE_ENVIRONMENT: ${{ secrets.ENV || 'Production' }}
