@@ -4,6 +4,9 @@
 # - actions/checkout@v4, setup-dotnet@v4 (was v2/v1)
 # - dropped broken pre-check job that referenced undefined IsOpenDailyTask
 # - dropped deprecated ::set-output syntax
+# - every optional env mapping now has a fallback default: an undefined secret
+#   expands to "", and an empty value OVERRIDES appsettings.json (Serilog then
+#   fails parsing "" into the LogEventLevel enum -> exit code 134)
 
 name: bilibili-task
 
@@ -19,45 +22,38 @@ on:
     - cron: "0 16 * * *"
 
 env:
-  ASPNETCORE_ENVIRONMENT: ${{ secrets.ENV }}
+  ASPNETCORE_ENVIRONMENT: ${{ secrets.ENV || 'Production' }}
   Ray_BiliBiliCookies__1: ${{ secrets.COOKIESTR }}
   Ray_BiliBiliCookies__2: ${{ secrets.COOKIESTR2 }}
   Ray_BiliBiliCookies__3: ${{ secrets.COOKIESTR3 }}
-  # Push channels (optional)
+
+  # Push channels: an empty URL/token means "disabled", same as appsettings default
   Ray_Serilog__WriteTo__3__Args__botToken: ${{ secrets.PUSHTGTOKEN }}
   Ray_Serilog__WriteTo__3__Args__chatId: ${{ secrets.PUSHTGCHATID }}
-  Ray_Serilog__WriteTo__3__Args__restrictedToMinimumLevel: ${{ secrets.PUSHTGLEVEL }}
+  Ray_Serilog__WriteTo__3__Args__restrictedToMinimumLevel: ${{ secrets.PUSHTGLEVEL || 'Information' }}
   Ray_Serilog__WriteTo__4__Args__webHookUrl: ${{ secrets.PUSHWEIXINURL }}
-  Ray_Serilog__WriteTo__4__Args__restrictedToMinimumLevel: ${{ secrets.PUSHWEIXINLEVEL }}
-  Ray_Serilog__WriteTo__5__Args__restrictedToMinimumLevel: ${{ secrets.PUSHDINGLEVEL }}
+  Ray_Serilog__WriteTo__4__Args__restrictedToMinimumLevel: ${{ secrets.PUSHWEIXINLEVEL || 'Information' }}
+  Ray_Serilog__WriteTo__5__Args__restrictedToMinimumLevel: ${{ secrets.PUSHDINGLEVEL || 'Information' }}
   Ray_Serilog__WriteTo__6__Args__scKey: ${{ secrets.PUSHSCKEY }}
   Ray_Serilog__WriteTo__6__Args__turboScKey: ${{ secrets.PUSHSERVERTSCKEY }}
-  Ray_Serilog__WriteTo__6__Args__restrictedToMinimumLevel: ${{ secrets.PUSHSERVERLEVEL }}
+  Ray_Serilog__WriteTo__6__Args__restrictedToMinimumLevel: ${{ secrets.PUSHSERVERLEVEL || 'Information' }}
   Ray_Serilog__WriteTo__9__Args__token: ${{ secrets.PUSHPLUSTOKEN }}
   Ray_Serilog__WriteTo__9__Args__topic: ${{ secrets.PUSHPLUSTOPIC }}
   Ray_Serilog__WriteTo__9__Args__channel: ${{ secrets.PUSHPLUSCHANNEL }}
   Ray_Serilog__WriteTo__9__Args__webhook: ${{ secrets.PUSHPLUSWEBHOOK }}
-  Ray_Serilog__WriteTo__9__Args__restrictedToMinimumLevel: ${{ secrets.PUSHPLUSLEVEL }}
+  Ray_Serilog__WriteTo__9__Args__restrictedToMinimumLevel: ${{ secrets.PUSHPLUSLEVEL || 'Information' }}
+  Ray_Serilog__WriteTo__0__Args__restrictedToMinimumLevel: ${{ secrets.CONSOLELOGLEVEL || 'Information' }}
+
   # Security
-  Ray_Security__IsSkipDailyTask: ${{ secrets.ISSKIPDAILYTASK }}
-  Ray_Security__IntervalSecondsBetweenRequestApi: ${{ secrets.INTERVALSECONDSBETWEENREQUESTAPI }}
-  Ray_Security__IntervalMethodTypes: ${{ secrets.INTERVALMETHODTYPES }}
-  Ray_Security__UserAgent: ${{ secrets.USERAGENT }}
-  Ray_Security__WebProxy: ${{ secrets.WEBPROXY }}
-  Ray_Security__RandomSleepMaxMin: ${{ secrets.RANDOMSLEEPMAXMIN }}
+  Ray_Security__IsSkipDailyTask: ${{ secrets.ISSKIPDAILYTASK || 'false' }}
+  Ray_Security__IntervalSecondsBetweenRequestApi: ${{ secrets.INTERVALSECONDSBETWEENREQUESTAPI || '10' }}
+  Ray_Security__RandomSleepMaxMin: ${{ secrets.RANDOMSLEEPMAXMIN || '0' }}
+
   # Daily task config
-  Ray_DailyTaskConfig__NumberOfCoins: ${{ secrets.NUMBEROFCOINS }}
-  Ray_DailyTaskConfig__SaveCoinsWhenLv6: ${{ secrets.SAVECOINSWHENLV6 }}
-  Ray_DailyTaskConfig__SelectLike: ${{ secrets.SELECTLIKE }}
+  Ray_DailyTaskConfig__NumberOfCoins: ${{ secrets.NUMBEROFCOINS || '5' }}
+  Ray_DailyTaskConfig__SaveCoinsWhenLv6: ${{ secrets.SAVECOINSWHENLV6 || 'false' }}
+  Ray_DailyTaskConfig__SelectLike: ${{ secrets.SELECTLIKE || 'true' }}
   Ray_DailyTaskConfig__SupportUpIds: ${{ secrets.SUPPORTUPIDS }}
-  Ray_DailyTaskConfig__DayOfAutoCharge: ${{ secrets.DAYOFAUTOCHARGE }}
-  Ray_DailyTaskConfig__AutoChargeUpId: ${{ secrets.AUTOCHARGEUPID }}
-  Ray_DailyTaskConfig__ChargeComment: ${{ secrets.CHARGECOMMENT }}
-  Ray_DailyTaskConfig__DayOfReceiveVipPrivilege: ${{ secrets.DAYOFRECEIVEVIPPRIVILEGE }}
-  Ray_DailyTaskConfig__DayOfExchangeSilver2Coin: ${{ secrets.DAYOFEXCHANGESILVER2COIN }}
-  Ray_DailyTaskConfig__DevicePlatform: ${{ secrets.DEVICEPLATFORM }}
-  Ray_Serilog__WriteTo__0__Args__restrictedToMinimumLevel: ${{ secrets.CONSOLELOGLEVEL }}
-  Ray_Serilog__WriteTo__0__Args__outputTemplate: ${{ secrets.CONSOLELOGTEMPLATE }}
 
 jobs:
   run-task:
