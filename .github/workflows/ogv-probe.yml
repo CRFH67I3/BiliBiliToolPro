@@ -1,64 +1,53 @@
 name: ogv-probe
 
-# 一次性探测：定位「观看剧集内容」6007000 的真实原因
-# 第二轮：对比 App UA 与网页 UA，并 dump 任务结构
+# 一次性探测：定位 6007000 的确切成因 + 探测第 2 步 material/receive
 on:
   workflow_dispatch:
 
 jobs:
   probe:
     runs-on: ubuntu-latest
-    timeout-minutes: 8
+    timeout-minutes: 10
     steps:
-      - name: Probe receive/v2 with both UAs
+      - name: Isolate the missing header
         env:
           COOKIESTR: ${{ secrets.COOKIESTR }}
         run: |
           set -u
-          if [ -z "$COOKIESTR" ]; then echo "::error::COOKIESTR is empty"; exit 1; fi
-
-          # 同一步内提取，绝不写入 GITHUB_ENV（否则会以明文出现在日志 env 块里）
           csrf=$(printf '%s' "$COOKIESTR" | tr ';' '\n' | sed -n 's/^[[:space:]]*bili_jct=//p' | tr -d '\r\n')
           buvid=$(printf '%s' "$COOKIESTR" | tr ';' '\n' | sed -n 's/^[[:space:]]*buvid3=//p' | tr -d '\r\n')
-          echo "::add-mask::$csrf"
-          echo "::add-mask::$buvid"
+          echo "::add-mask::$csrf"; echo "::add-mask::$buvid"
 
-          UA_APP='Mozilla/5.0 BiliDroid/8.45.1 (bbcallen@gmail.com) os/android model/SM-S9210 mobi_app/android build/8451100 channel/bili innerVer/8451110 osVer/12 network/2'
           UA_WEB='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
           URL='https://api.bilibili.com/pgc/activity/score/task/receive/v2'
 
           call() {
-            label="$1"; ua="$2"; with_build="$3"; with_app_headers="$4"
-            args=""
-            [ "$with_build" = "yes" ] && args="$args --data-urlencode build=8451100"
-            if [ "$with_app_headers" = "yes" ]; then
-              extra=(-H 'referer: https://big.bilibili.com/mobile/bigPoint/task' -H 'native_api_from: h5')
-            else
-              extra=()
-            fi
+            label="$1"; with_ref="$2"; with_native="$3"
+            hdr=()
+            [ "$with_ref" = "yes" ] && hdr+=(-H 'referer: https://big.bilibili.com/mobile/bigPoint/task')
+            [ "$with_native" = "yes" ] && hdr+=(-H 'native_api_from: h5')
             curl -s "$URL" \
               -H "Cookie: $COOKIESTR" \
-              -H "User-Agent: $ua" \
-              "${extra[@]}" \
+              -H "User-Agent: $UA_WEB" \
+              "${hdr[@]}" \
               --data-urlencode 'taskCode=ogvwatchnew' \
+              --data-urlencode 'build=8451100' \
               --data-urlencode "csrf=$csrf" \
               --data-urlencode "buvid=$buvid" \
               --data-urlencode 'platform=android' \
               --data-urlencode 'mobi_app=android' \
-              $args \
-              -o /tmp/r.json
-            printf '%-46s => %s\n' "$label" "$(jq -r '"code=\(.code) message=\(.message)"' /tmp/r.json 2>/dev/null || head -c 200 /tmp/r.json)"
+              -o /tmp/x.json
+            printf '%-52s => %s\n' "$label" "$(jq -r '"code=\(.code) message=\(.message)"' /tmp/x.json 2>/dev/null || head -c 200 /tmp/x.json)"
             sleep 3
           }
 
-          echo "########## 对照实验 ##########"
-          call "C: APP UA + build + app headers"              "$UA_APP" yes yes
-          call "D: APP UA, no build"                          "$UA_APP" no  yes
-          call "E: WEB UA + build (项目当前形态)"              "$UA_WEB" yes no
-          call "F: WEB UA + build + app headers"              "$UA_WEB" yes yes
-          call "G: WEB UA, no build"                          "$UA_WEB" no  no
+          echo "########## 请求头隔离实验（全部用网页 UA + build） ##########"
+          call "H: 仅 referer（项目当前形态）"        yes no
+          call "I: 仅 native_api_from"                no  yes
+          call "J: referer + native_api_from"         yes yes
+          call "K: 都不带"                            no  no
 
-      - name: Dump task structure
+      - name: Dump task structure and point
         env:
           COOKIESTR: ${{ secrets.COOKIESTR }}
         run: |
@@ -68,9 +57,58 @@ jobs:
             -H 'User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36' \
             -o /tmp/combine.json
           echo "combine: $(jq -r '"code=\(.code) point=\(.data.point_info.point // "n/a")"' /tmp/combine.json 2>/dev/null || head -c 200 /tmp/combine.json)"
-          echo "########## data 顶层 keys ##########"
-          jq -r '(.data // {}) | keys | join(", ")' /tmp/combine.json 2>/dev/null || true
-          echo "########## modules 结构 ##########"
-          jq -r '(.data.task_info.modules // [])[] | "MODULE [\(.module_title)] keys=\(keys|join(",")) task_count=\((.tasks // [])|length)"' /tmp/combine.json 2>/dev/null || true
-          echo "########## 任务明细（全部） ##########"
-          jq -r '(.data.task_info.modules // [])[] | .module_title as $m | (.tasks // [])[] | "\($m) | id=\(.task_id // "-") | code=\(.task_code // "-") | title=\(.title // .task_name // "-") | state=\(.state // "-") | times=\(.complete_times // "-")"' /tmp/combine.json 2>/dev/null || true
+          echo "########## common_task_item 类型 ##########"
+          jq -r '(.data.task_info.modules // [])[] | "\(.module_title): type=\(.common_task_item|type)"' /tmp/combine.json 2>/dev/null || true
+          echo "########## 日常任务明细 ##########"
+          jq -r '(.data.task_info.modules // [])[] | select(.module_title|test("日常")) | .common_task_item[]? | "id=\(.task_id // "-") code=\(.task_code // "-") title=\(.title // "-") state=\(.state // "-") times=\(.complete_times // "-")"' /tmp/combine.json 2>/dev/null || true
+          echo "########## 日常模块原始结构（截断 1500 字符） ##########"
+          jq -c '(.data.task_info.modules // [])[] | select(.module_title|test("日常")) | .common_task_item[0]' /tmp/combine.json 2>/dev/null | head -c 1500 || true
+          echo
+
+      - name: Resolve ep_id from season 33378
+        run: |
+          set -u
+          curl -s 'https://api.bilibili.com/pgc/view/web/season?season_id=33378' \
+            -H 'User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36' \
+            -o /tmp/season.json
+          echo "season: $(jq -r '"code=\(.code) title=\(.result.season_title // "n/a") eps=\((.result.episodes // [])|length)"' /tmp/season.json 2>/dev/null || head -c 200 /tmp/season.json)"
+          jq -r '(.result.episodes // [])[0] | "ep_id=\(.id) aid=\(.aid) title=\(.title) long_title=\(.long_title)"' /tmp/season.json 2>/dev/null || true
+          jq -r '(.result.episodes // [])[0].id // ""' /tmp/season.json > /tmp/epid.txt 2>/dev/null || true
+          echo "resolved ep_id=$(cat /tmp/epid.txt)"
+          echo "EPID=$(cat /tmp/epid.txt)" >> "$GITHUB_ENV"
+
+      - name: Step 2 material/receive without access_key
+        env:
+          COOKIESTR: ${{ secrets.COOKIESTR }}
+        run: |
+          set -u
+          csrf=$(printf '%s' "$COOKIESTR" | tr ';' '\n' | sed -n 's/^[[:space:]]*bili_jct=//p' | tr -d '\r\n')
+          buvid=$(printf '%s' "$COOKIESTR" | tr ';' '\n' | sed -n 's/^[[:space:]]*buvid3=//p' | tr -d '\r\n')
+          echo "::add-mask::$csrf"
+          ep="${EPID:-}"
+          if [ -z "$ep" ]; then echo "::warning::ep_id not resolved, skip step 2"; exit 0; fi
+          echo "=== 第 2 步：material/receive（不带 access_key）ep_id=$ep season_id=33378 ==="
+          curl -s 'https://api.bilibili.com/pgc/activity/deliver/material/receive' \
+            -H "Cookie: $COOKIESTR" \
+            -H 'User-Agent: Mozilla/5.0 BiliDroid/8.45.1 (bbcallen@gmail.com) os/android model/SM-S9210 mobi_app/android build/8451100 channel/bili innerVer/8451110 osVer/12 network/2' \
+            -H 'referer: https://big.bilibili.com/mobile/bigPoint/task' \
+            -H 'native_api_from: h5' \
+            --data-urlencode "ep_id=$ep" \
+            --data-urlencode 'season_id=33378' \
+            --data-urlencode 'build=8451100' \
+            --data-urlencode 'mobi_app=android' \
+            --data-urlencode 'platform=android' \
+            --data-urlencode 'channel=bili' \
+            --data-urlencode 'c_locale=zh_CN' \
+            --data-urlencode 's_locale=zh_CN' \
+            --data-urlencode 'disable_rcmd=0' \
+            --data-urlencode 'from_spmid=activity.h5.0.0' \
+            --data-urlencode 'spmid=united.player-video-detail.0.0' \
+            --data-urlencode "buvid=$buvid" \
+            --data-urlencode "csrf=$csrf" \
+            -o /tmp/mat.json
+          echo "material/receive => $(jq -r '"code=\(.code) message=\(.message)"' /tmp/mat.json 2>/dev/null || head -c 300 /tmp/mat.json)"
+          echo "--- data 结构 ---"
+          jq -r '(.data // {}) | keys | join(", ")' /tmp/mat.json 2>/dev/null || true
+          jq -c '.data' /tmp/mat.json 2>/dev/null | head -c 600 || true
+          echo
