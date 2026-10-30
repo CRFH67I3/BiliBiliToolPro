@@ -1,0 +1,62 @@
+name: bgm-probe
+
+# 一次性探测：能否用自己的 Cookie 取到「追番」列表（仅手动触发，用完删除）
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Probe follow-list endpoints
+        env:
+          COOKIESTR: ${{ secrets.COOKIESTR }}
+        run: |
+          set -u
+          if [ -z "${COOKIESTR:-}" ]; then echo "::error::COOKIESTR 未配置"; exit 1; fi
+
+          mid=$(printf '%s' "$COOKIESTR" | tr ';' '\n' | sed -n 's/^[[:space:]]*DedeUserID=//p' | tr -d '\r\n')
+          echo "::add-mask::$mid"
+          echo "mid_len=${#mid}"
+          UA='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36'
+
+          probe () {
+            name="$1"; url="$2"; referer="$3"
+            echo "===== ${name} ====="
+            code=$(curl -s "$url" -H "Cookie: $COOKIESTR" -H "User-Agent: $UA" -H "Referer: $referer" -o /tmp/out.json -w '%{http_code}')
+            echo "http=$code bytes=$(wc -c < /tmp/out.json)"
+            python3 - <<'PY'
+          import json
+          try:
+              d = json.load(open('/tmp/out.json'))
+          except Exception as e:
+              print('not json:', e, open('/tmp/out.json','rb').read()[:200]); raise SystemExit
+          print('code=', d.get('code'), 'message=', d.get('message'))
+          data = d.get('data') or {}
+          if isinstance(data, dict):
+              print('list_len=', len(data.get('list') or []), 'total=', data.get('total'))
+              for it in (data.get('list') or [])[:3]:
+                  print('  ssid=', it.get('season_id'), '| title=', it.get('title'),
+                        '| progress=', it.get('progress'),
+                        '| follow_status=', it.get('follow_status'),
+                        '| new_ep=', (it.get('new_ep') or {}).get('id'),
+                        (it.get('new_ep') or {}).get('index_show'))
+                  print('    keys=', sorted(it.keys())[:18])
+          PY
+          }
+
+          probe "A: space/follow/list type=1 全部" \
+            "https://api.bilibili.com/x/space/bangumi/follow/list?type=1&follow_status=0&pn=1&ps=12&vmid=${mid}&order=0&sort=0" \
+            "https://space.bilibili.com/${mid}/bangumi"
+
+          probe "B: space/follow/list type=1 看过" \
+            "https://api.bilibili.com/x/space/bangumi/follow/list?type=1&follow_status=3&pn=1&ps=12&vmid=${mid}&order=0&sort=0" \
+            "https://space.bilibili.com/${mid}/bangumi"
+
+          probe "C: space/follow/list type=2 影视" \
+            "https://api.bilibili.com/x/space/bangumi/follow/list?type=2&follow_status=0&pn=1&ps=5&vmid=${mid}&order=0&sort=0" \
+            "https://space.bilibili.com/${mid}/bangumi"
