@@ -1,6 +1,8 @@
 name: bgm-probe
 
-# 一次性探测：确认「追番」列表条目的字段结构（仅手动触发，用完删除）
+# 一次性探测：验证「从追番挑的那一集」是否和已知可播的剧集等效
+# 对照实验：A=追番第1话 / B=已知可播(ep321808) / C=编造的 ep（负对照）
+# 仅手动触发，用完删除
 on:
   workflow_dispatch:
 
@@ -12,7 +14,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - name: Dump follow-list item shape
+      - name: Differential probe on material/receive
         env:
           COOKIESTR: ${{ secrets.COOKIESTR }}
         run: |
@@ -20,30 +22,62 @@ jobs:
           if [ -z "${COOKIESTR:-}" ]; then echo "::error::COOKIESTR 未配置"; exit 1; fi
 
           mid=$(printf '%s' "$COOKIESTR" | tr ';' '\n' | sed -n 's/^[[:space:]]*DedeUserID=//p' | tr -d '\r\n')
-          echo "::add-mask::$mid"
+          csrf=$(printf '%s' "$COOKIESTR" | tr ';' '\n' | sed -n 's/^[[:space:]]*bili_jct=//p' | tr -d '\r\n')
+          buvid=$(printf '%s' "$COOKIESTR" | tr ';' '\n' | sed -n 's/^[[:space:]]*buvid3=//p' | tr -d '\r\n')
+          echo "::add-mask::$mid"; echo "::add-mask::$csrf"; echo "::add-mask::$buvid"
           UA='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36'
 
-          curl -s "https://api.bilibili.com/x/space/bangumi/follow/list?type=1&follow_status=3&pn=1&ps=12&vmid=${mid}&order=0&sort=0" \
+          echo "=== 1) 追番列表（看过，取前 3 部）==="
+          curl -s "https://api.bilibili.com/x/space/bangumi/follow/list?type=1&follow_status=3&pn=1&ps=3&order=0&sort=0&vmid=${mid}" \
             -H "Cookie: $COOKIESTR" -H "User-Agent: $UA" \
-            -H "Referer: https://space.bilibili.com/${mid}/bangumi" -o /tmp/list.json
+            -H "Referer: https://space.bilibili.com/${mid}/bangumi" -o /tmp/follow.json
 
-          python3 - <<'PY'
+          python3 - <<'PY' > /tmp/cases.txt
           import json
-          d = json.load(open('/tmp/list.json'))
+          d = json.load(open('/tmp/follow.json'))
           items = (d.get('data') or {}).get('list') or []
-          print('code=', d.get('code'), 'items=', len(items))
-          it = items[0]
-          print('--- all keys ---')
-          print(sorted(it.keys()))
-          print('--- picked fields ---')
-          for k in ['season_id','season_type','title','progress','follow_status','can_watch',
-                    'new_ep','first_ep','first_ep_index','total_count','publish','season_status',
-                    'badge','badge_ep','is_started']:
-              if k in it:
-                  print(f'{k} =', json.dumps(it[k], ensure_ascii=False)[:300])
-          print('--- 所有条目的 progress / new_ep.id / first_ep ---')
-          for x in items:
-              print(x.get('season_id'), '|', str(x.get('title'))[:14], '| progress=', x.get('progress'),
-                    '| new_ep=', json.dumps(x.get('new_ep'), ensure_ascii=False)[:60],
-                    '| first_ep=', json.dumps(x.get('first_ep'), ensure_ascii=False)[:60])
+          print('list_code=', d.get('code'), 'items=', len(items))
+          for it in items[:3]:
+              print('  ssid=%s first_ep=%s new_ep=%s title=%s' % (
+                  it.get('season_id'), it.get('first_ep'),
+                  (it.get('new_ep') or {}).get('id'), it.get('title')))
+          if items:
+              it = items[0]
+              print('%s %s %s' % ('A', it.get('first_ep'), it.get('season_id')))
           PY
+          cat /tmp/cases.txt
+          A_LINE=$(grep '^A ' /tmp/cases.txt | head -1)
+          A_EP=$(echo "$A_LINE" | awk '{print $2}'); A_SS=$(echo "$A_LINE" | awk '{print $3}')
+          echo "picked: ep=$A_EP season=$A_SS"
+
+          mat () {
+            label="$1"; ep="$2"; ss="$3"
+            curl -s 'https://api.bilibili.com/pgc/activity/deliver/material/receive' \
+              -H "Cookie: $COOKIESTR" -H "User-Agent: $UA" \
+              -H 'referer: https://big.bilibili.com/mobile/bigPoint/task' \
+              -H 'native_api_from: h5' \
+              --data-urlencode "ep_id=$ep" --data-urlencode "season_id=$ss" \
+              --data-urlencode 'build=8451100' --data-urlencode 'mobi_app=android' \
+              --data-urlencode 'platform=android' --data-urlencode 'channel=bili' \
+              --data-urlencode 'c_locale=zh_CN' --data-urlencode 's_locale=zh_CN' \
+              --data-urlencode 'disable_rcmd=0' \
+              --data-urlencode 'from_spmid=activity.h5.0.0' \
+              --data-urlencode 'spmid=united.player-video-detail.0.0' \
+              --data-urlencode "buvid=$buvid" --data-urlencode "csrf=$csrf" -o /tmp/m.json
+            python3 - "$label" <<'PY'
+          import json, sys
+          label = sys.argv[1]
+          try:
+              d = json.load(open('/tmp/m.json'))
+          except Exception:
+              print(label, 'NOT-JSON', open('/tmp/m.json','rb').read()[:120]); raise SystemExit
+          cfg = ((d.get('data') or {}).get('watch_count_down_cfg') or {})
+          print('%s => code=%s message=%s task_id=%s ms=%s' % (
+              label, d.get('code'), d.get('message'), cfg.get('task_id'), cfg.get('milliseconds')))
+          PY
+          }
+
+          echo "=== 2) 对照实验（只调 material/receive，不上报）==="
+          mat "A-追番第1话" "$A_EP" "$A_SS"
+          mat "B-已知可播 " 321808 33378
+          mat "C-编造ep   " 1 1

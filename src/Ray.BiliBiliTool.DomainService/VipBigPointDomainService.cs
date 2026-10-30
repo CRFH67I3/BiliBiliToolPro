@@ -291,30 +291,52 @@ public class VipBigPointDomainService(
             await TryReceive(taskCode, ck);
         }
 
-        var (epId, seasonId) = await PickBangumiEpAsync(ck);
-        if (epId <= 0)
+        var candidates = await BuildOgvCandidatesAsync(ck);
+        if (candidates.Count == 0)
         {
             logger.LogInformation(
-                "未取到可观看的剧集，跳过（请检查 VipBigPointConfig:ViewBangumis）"
+                "未取到可观看的剧集，跳过（追番为空，且 VipBigPointConfig:ViewBangumis 未配置）"
             );
             return false;
         }
 
-        var start = await apiApi.StartOgvWatchAsync(
-            new StartOgvWatchRequest(epId, seasonId, ck.BiliJct, ck.Buvid),
-            ck.ToString()
-        );
-        var cfg = start.Data?.watch_count_down_cfg;
-        if (
-            start.Code != 0
-            || cfg is null
-            || string.IsNullOrEmpty(cfg.task_id)
-            || string.IsNullOrEmpty(cfg.token)
-        )
+        // 某一部可能因为地区限制、预告片、专辑未过审等原因播不了，换下一部重试
+        BiliApiResponse<StartOgvWatchResponse>? start = null;
+        OgvCandidate chosen = default;
+        foreach (var candidate in candidates.Take(MaxOgvCandidates))
         {
-            logger.LogInformation("开始观看失败：{msg}", start.ToJsonStr());
+            var tryStart = await apiApi.StartOgvWatchAsync(
+                new StartOgvWatchRequest(candidate.EpId, candidate.SeasonId, ck.BiliJct, ck.Buvid),
+                ck.ToString()
+            );
+            var tryCfg = tryStart.Data?.watch_count_down_cfg;
+            if (
+                tryStart.Code == 0
+                && tryCfg is not null
+                && !string.IsNullOrEmpty(tryCfg.task_id)
+                && !string.IsNullOrEmpty(tryCfg.token)
+            )
+            {
+                start = tryStart;
+                chosen = candidate;
+                break;
+            }
+
+            logger.LogInformation(
+                "这部看不了，换一部：{label}｜{msg}",
+                candidate.Label,
+                tryStart.ToJsonStr()
+            );
+        }
+
+        if (start is null)
+        {
+            logger.LogInformation("开始观看失败：候选剧集都不可用");
             return false;
         }
+
+        var cfg = start.Data!.watch_count_down_cfg!;
+        logger.LogInformation("本次播放的正片为：{label}（ep_id={ep}）", chosen.Label, chosen.EpId);
 
         int waitSeconds =
             cfg.milliseconds > 0
@@ -322,7 +344,7 @@ public class VipBigPointDomainService(
                 : _vipBigPointOptions.OgvWatchWaitSeconds;
         logger.LogInformation(
             "已开始观看：ep_id={ep}，task_id={id}，等待 {sec} 秒后上报",
-            epId,
+            chosen.EpId,
             cfg.task_id,
             waitSeconds
         );
@@ -375,20 +397,101 @@ public class VipBigPointDomainService(
             .Task_info.Modules.FirstOrDefault(x => x.module_title == moduleCode)
             ?.common_task_item.FirstOrDefault(x => x.task_code == taskCode);
 
+    /// <summary>最多尝试几部剧集：每部失败只多一次请求，不会额外消耗等待时间</summary>
+    private const int MaxOgvCandidates = 6;
+
+    /// <summary>候选剧集：ep_id + 所属季 season_id + 日志说明</summary>
+    private readonly record struct OgvCandidate(long EpId, long SeasonId, string Label);
+
     /// <summary>
-    /// 从配置的番剧列表里随机取一集的 ep_id
+    /// 挑选可用于「观看剧集内容」的目标，返回按随机顺序排好的候选列表。
     /// </summary>
-    private async Task<(long EpId, long SeasonId)> PickBangumiEpAsync(BiliCookie ck)
+    /// <remarks>
+    /// 优先用「我的追番」里看过的番剧：第 1 话必定已解锁，且追番列表单条数据就带了
+    /// first_ep / season_id，不需要再拉整季详情（名侦探柯南一季 1200+ 集，1.2MB）。
+    /// 追番为空或接口失败时，回退到 VipBigPointConfig:ViewBangumis 配置的 ssid。
+    /// </remarks>
+    private async Task<List<OgvCandidate>> BuildOgvCandidatesAsync(BiliCookie ck)
     {
-        if (_vipBigPointOptions.ViewBangumiList.Count == 0)
-            return (0, 0);
+        List<OgvCandidate> fromFollow = _vipBigPointOptions.UseFollowedBangumis
+            ? await GetFollowedOgvCandidatesAsync(ck)
+            : [];
+        if (fromFollow.Count > 0)
+            return fromFollow;
 
-        long randomSsid = _vipBigPointOptions.ViewBangumiList[
-            new Random().Next(0, _vipBigPointOptions.ViewBangumiList.Count)
-        ];
+        var fromConfig = new List<OgvCandidate>();
+        foreach (var ssid in _vipBigPointOptions.ViewBangumiList.OrderBy(_ => Random.Shared.Next()))
+        {
+            var picked = await GetBangumi(ssid, ck);
+            if (picked is not null)
+                fromConfig.Add(
+                    new OgvCandidate(picked.Value.Item2, ssid, picked.Value.Item1.Title)
+                );
+        }
 
-        var res = await GetBangumi(randomSsid, ck);
-        return res is null ? (0, 0) : (res.Value.Item2, randomSsid);
+        return fromConfig;
+    }
+
+    /// <summary>
+    /// 从「我的追番」里随机挑几部看过的番剧，每部给出第 1 话（主选）和最新话（备选）。
+    /// </summary>
+    private async Task<List<OgvCandidate>> GetFollowedOgvCandidatesAsync(BiliCookie ck)
+    {
+        var result = new List<OgvCandidate>();
+        if (!long.TryParse(ck.UserId, out long mid) || mid <= 0)
+        {
+            logger.LogWarning("Cookie 里没有 DedeUserID，无法读取追番列表，改用配置的番剧");
+            return result;
+        }
+
+        GetFollowedBangumiResponse? data;
+        try
+        {
+            var res = await apiApi.GetFollowedBangumiList(mid, ck.ToString());
+            if (res.Code != 0)
+            {
+                logger.LogWarning(
+                    "读取追番列表失败（code={code} {msg}），改用配置的番剧",
+                    res.Code,
+                    res.Message
+                );
+                return result;
+            }
+
+            data = res.Data;
+        }
+        catch (Exception e)
+        {
+            logger.LogWarning("读取追番列表异常，改用配置的番剧：{msg}", e.Message);
+            return result;
+        }
+
+        var items = (data?.List ?? [])
+            .Where(x => x.season_id > 0 && x.first_ep > 0)
+            .OrderBy(_ => Random.Shared.Next())
+            .ToList();
+
+        logger.LogInformation("从追番里挑剧集，共 {count} 部可选", items.Count);
+
+        foreach (var item in items)
+        {
+            // 进度是「看到第N话」时，第 1 话必定已解锁，不存在付费/地区限制导致播不了的情况
+            result.Add(new OgvCandidate(item.first_ep, item.season_id, $"{item.title} 第1话"));
+
+            // 最新话兜底：个别老番的 first_ep 指向预告片
+            if (item.new_ep is { id: > 0 } newEp && newEp.id != item.first_ep)
+            {
+                result.Add(
+                    new OgvCandidate(
+                        newEp.id,
+                        item.season_id,
+                        $"{item.title} {newEp.index_show ?? newEp.long_title ?? "最新话"}"
+                    )
+                );
+            }
+        }
+
+        return result;
     }
 
     /// <summary>
@@ -478,30 +581,35 @@ public class VipBigPointDomainService(
     /// </summary>
     /// <param name="randomSsid">番剧ssid</param>
     /// <returns></returns>
-    private async Task<(VideoInfoDto, long)?> GetBangumi(long randomSsid, BiliCookie ck)
+    /// <summary>
+    /// 拉取某一季的剧集列表并随机取一集。仅作为「追番列表不可用」时的兜底。
+    /// </summary>
+    private async Task<(VideoInfoDto, long)?> GetBangumi(long ssid, BiliCookie ck)
     {
         try
         {
-            if (randomSsid is 0 or long.MinValue)
+            if (ssid is 0 or long.MinValue)
                 return null;
-            var bangumiInfo = await apiApi.GetBangumiBySsid(randomSsid, ck.ToString());
 
-            // 从获取的剧集中随机获得其中的一集
-
-            var bangumi = bangumiInfo.Result.episodes[
-                new Random().Next(0, bangumiInfo.Result.episodes.Count)
-            ];
-            var videoInfo = new VideoInfoDto()
+            var bangumiInfo = await apiApi.GetBangumiBySsid(ssid, ck.ToString());
+            var episodes = bangumiInfo.Result?.episodes;
+            if (episodes is null || episodes.Count == 0)
             {
-                Bvid = bangumi.bvid,
-                Aid = bangumi.aid.ToString(),
-                Cid = bangumi.cid,
+                logger.LogWarning("番剧 {ssid} 没有可用的剧集", ssid);
+                return null;
+            }
+
+            var episode = episodes[Random.Shared.Next(0, episodes.Count)];
+            var videoInfo = new VideoInfoDto
+            {
+                Bvid = episode.bvid,
+                Aid = episode.aid.ToString(),
+                Cid = episode.cid,
                 Copyright = 1,
-                Duration = bangumi.duration,
-                Title = bangumi.share_copy,
+                Duration = episode.duration,
+                Title = episode.share_copy,
             };
-            logger.LogInformation("本次播放的正片为：{title}", bangumi.share_copy);
-            return (videoInfo, bangumi.ep_id);
+            return (videoInfo, episode.ep_id);
         }
         catch (Exception e)
         {

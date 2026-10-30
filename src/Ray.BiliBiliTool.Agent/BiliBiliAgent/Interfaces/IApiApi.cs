@@ -253,6 +253,22 @@ public interface IApiApi
     Task<GetBangumiBySsidResponse> GetBangumiBySsid(long ssid, [Header("Cookie")] string ck);
 
     /// <summary>
+    /// 获取「我的追番」列表（仅已看过的，follow_status=3）。
+    /// </summary>
+    /// <remarks>
+    /// query 直接写在模板里：这条接口的参数名是下划线风格（follow_status），
+    /// 走 [Query] 绑定容易受命名策略影响，写死更稳。实测 Cookie 即可访问，无需 WBI 签名。
+    /// </remarks>
+    [Headers("Referer: https://space.bilibili.com/")]
+    [Get(
+        "/x/space/bangumi/follow/list?type=1&follow_status=3&pn=1&ps=30&order=0&sort=0&vmid={vmid}"
+    )]
+    Task<BiliApiResponse<GetFollowedBangumiResponse>> GetFollowedBangumiList(
+        long vmid,
+        [Header("Cookie")] string ck
+    );
+
+    /// <summary>
     /// 获取视频详情（WBI 签名版，避免 -412）。
     /// 通过 wts 触发 WridEncryptionDelegatingHandler 签名，
     /// 并显式传递 Cookie 以便获取 WBI 密钥。
