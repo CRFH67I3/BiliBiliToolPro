@@ -47,7 +47,7 @@ Other console configuration (for example user agent, notifications, or `Ray_Dail
 
 ![Save the serverless YAML secret](../../docs/imgs/tencent-scf-secret_yml.png)
 
-If using automatic deployment, keep your fork up to date separately. The [fork-sync workflow](../../.github/workflows/sync-fork-with-upstream.yml) uses a `PAT` secret; enabling SCF's schedule does not by itself pull upstream changes.
+If using automatic deployment, keep your fork up to date separately. The [fork-sync workflow](../../.github/workflows/sync-fork-with-upstream.yml) pushes with the built-in `GITHUB_TOKEN`, so it needs no secret; enabling SCF's schedule does not by itself pull upstream changes.
 
 In your fork, open **Actions → Deploy Tencent SCF → Run workflow**. The workflow checks out the repository, installs the Serverless Cloud Framework CLI, runs `platforms/tencentScf/publish.sh`, and calls `scf deploy`. Review its result and check the function in the cloud console.
 

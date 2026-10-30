@@ -101,26 +101,9 @@ Use this only as a last resort. Deleting the fork discards its repository secret
 <a id="52-方法二使用提供的-repo-sync-工作流脚本同步"></a>
 ### 5.2. Use the included sync workflow
 
-The current workflow is [`.github/workflows/sync-fork-with-upstream.yml`](../.github/workflows/sync-fork-with-upstream.yml), **not** the old `repo-sync.yml`. It checks out the fork, then uses `repo-sync/github-sync@v2` to sync upstream `main` to the fork's `main`; it requires the repository secret `PAT`. Review how this affects local commits before running it.
+The current workflow is [`.github/workflows/sync-fork-with-upstream.yml`](../.github/workflows/sync-fork-with-upstream.yml), **not** the old `repo-sync.yml`. It checks out the fork, fetches upstream `main`, merges it and pushes the result back with the repository's built-in `GITHUB_TOKEN`. No personal access token and no repository secret are required; on conflict the merge keeps this fork's own commits (its workflow customisations), so a fork can carry local CI changes without breaking the sync.
 
-1. Create a GitHub personal access token with permissions appropriate for updating your fork's repository and workflows. The [legacy token creation link](https://github.com/settings/tokens/new?description=repo-sync&scopes=repo,workflow) preselects `repo` and `workflow` scopes for a classic token. Copy the token when it is shown; you may not be able to view it again. See GitHub's [encrypted secrets documentation](https://docs.github.com/cn/free-pro-team@latest/actions/reference/encrypted-secrets).
-
-   ![Generate a token 01](https://cdn.jsdelivr.net/gh/Ryanjiena/BiliBiliTool.Docs@main/imgs/generate_a_token_01.png)
-
-   ![Generate a token 02](https://cdn.jsdelivr.net/gh/Ryanjiena/BiliBiliTool.Docs@main/imgs/generate_a_token_02.png)
-
-2. Add the token under **Settings → Secrets and variables → Actions** in your fork:
-
-   | Repository secret | Value |
-   | --- | --- |
-   | Name | `PAT` |
-   | Value | The token created in the previous step |
-
-   ![New repository secret 01](https://cdn.jsdelivr.net/gh/Ryanjiena/BiliBiliTool.Docs@main/imgs/new_repository_secret_01.png)
-
-   ![New repository secret 02](https://cdn.jsdelivr.net/gh/Ryanjiena/BiliBiliTool.Docs@main/imgs/new_repository_secret_02.png)
-
-3. Select **Actions → Sync fork with upstream → Run workflow** to trigger a sync manually, or wait for the scheduled run.
+Select **Actions → Sync fork with upstream → Run workflow** to trigger a sync manually, or wait for the scheduled run.
 
    ![Run sync workflow](https://cdn.jsdelivr.net/gh/Ryanjiena/BiliBiliTool.Docs@main/imgs/run_sync_workflows.png)
 

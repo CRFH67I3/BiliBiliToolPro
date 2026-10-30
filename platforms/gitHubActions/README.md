@@ -6,7 +6,7 @@ This page preserves the original setup intent and screenshots for historical ref
 
 ## Historical setup: fork the repository
 
-The old instructions started by forking the repository. A fork alone contains only the archived task YAML under `bak/`, so there is no task runner to enable. The separate [fork-sync workflow](../../.github/workflows/sync-fork-with-upstream.yml) targets `main` and requires a `PAT` secret; it synchronizes source, **not** task execution.
+The old instructions started by forking the repository. A fork alone contains only the archived task YAML under `bak/`, so there is no task runner to enable. The separate [fork-sync workflow](../../.github/workflows/sync-fork-with-upstream.yml) targets `main` and pushes with the built-in `GITHUB_TOKEN`, so it needs no secret; it synchronizes source, **not** task execution.
 
 ## Historical setup: configure secrets
 
