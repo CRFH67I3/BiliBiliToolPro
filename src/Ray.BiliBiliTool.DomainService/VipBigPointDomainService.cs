@@ -399,8 +399,18 @@ public class VipBigPointDomainService(
         BiliApiResponse? re = null;
         try
         {
-            var request = new ReceiveOrCompleteTaskRequest(taskCode);
-            re = await apiApi.VipBigPointReceiveV2(request, ck.ToString());
+            // 「观看剧集内容」对客户端版本敏感，只传 taskCode + build 会被判为旧客户端
+            // （6007000），需要补 App 上下文参数，故单独走一个重载。
+            re =
+                taskCode == "ogvwatchnew"
+                    ? await apiApi.VipBigPointReceiveV2ForOgv(
+                        new OgvReceiveRequest { csrf = ck.BiliJct, buvid = ck.Buvid },
+                        ck.ToString()
+                    )
+                    : await apiApi.VipBigPointReceiveV2(
+                        new ReceiveOrCompleteTaskRequest(taskCode),
+                        ck.ToString()
+                    );
             if (re.Code == 0)
                 logger.LogInformation("领取任务成功");
             else

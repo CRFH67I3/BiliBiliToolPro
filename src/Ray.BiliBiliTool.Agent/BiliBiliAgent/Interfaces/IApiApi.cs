@@ -372,6 +372,24 @@ public interface IApiApi
         [Header("Cookie")] string ck
     );
 
+    /// <summary>
+    /// 领取「观看剧集内容」任务（同一接口，但需要 App 侧上下文字段）
+    /// </summary>
+    /// <remarks>
+    /// 只传 taskCode + build 时该任务码固定返回 6007000；
+    /// 补上 mobi_app/platform/csrf/buvid 与 native_api_from 才会被当作新版客户端放行。
+    /// </remarks>
+    [Headers(
+        "Referer: https://big.bilibili.com/mobile/bigPoint/task",
+        "native_api_from: h5",
+        "User-Agent: Mozilla/5.0 BiliDroid/8.45.1 (bbcallen@gmail.com) os/android model/SM-S9210 mobi_app/android build/8451100 channel/bili innerVer/8451110 osVer/12 network/2"
+    )]
+    [Post("/pgc/activity/score/task/receive/v2")]
+    Task<BiliApiResponse> VipBigPointReceiveV2ForOgv(
+        [Body(BodySerializationMethod.UrlEncoded)] OgvReceiveRequest request,
+        [Header("Cookie")] string ck
+    );
+
     [Headers("Referer: https://big.bilibili.com/mobile/bigPoint/task")]
     [Post("/pgc/activity/score/task/complete")]
     Task<BiliApiResponse> VipBigPointCompleteAsync(

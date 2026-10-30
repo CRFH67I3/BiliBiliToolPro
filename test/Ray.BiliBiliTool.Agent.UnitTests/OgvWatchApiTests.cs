@@ -110,6 +110,47 @@ public class OgvWatchApiTests
         }
     }
 
+    [Fact]
+    public async Task ReceiveOgvWatch_SendsAppContextFieldsOtherwise6007000()
+    {
+        using var handler = new CapturingHandler("""{"code":0,"message":"0"}""");
+        using var client = new HttpClient(handler)
+        {
+            BaseAddress = new Uri("https://api.bilibili.com"),
+        };
+        // 复现线上环境：HttpClient 上有全局的 Web UA，方法级 [Headers] 必须能覆盖它
+        client.DefaultRequestHeaders.TryAddWithoutValidation(
+            "User-Agent",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0"
+        );
+        var api = RestService.For<IApiApi>(client);
+
+        await api.VipBigPointReceiveV2ForOgv(
+            new OgvReceiveRequest { csrf = "csrf-token", buvid = "buvid-value" },
+            CookieStr
+        );
+
+        Assert.Equal("/pgc/activity/score/task/receive/v2", handler.LastUri!.AbsolutePath);
+        Assert.Equal(
+            "https://big.bilibili.com/mobile/bigPoint/task",
+            handler.LastHeaders!["Referer"]
+        );
+        Assert.Equal("h5", handler.LastHeaders["native_api_from"]);
+
+        // 方法级 UA 必须独占，不能与 HttpClient 默认 UA 合并成两个值
+        var ua = handler.LastHeaders["User-Agent"];
+        Assert.Contains("BiliDroid/8.45.1", ua);
+        Assert.DoesNotContain("Chrome/120", ua);
+
+        var form = HttpUtility.ParseQueryString(handler.LastBody!);
+        Assert.Equal("ogvwatchnew", form["taskCode"]);
+        Assert.Equal("8451100", form["build"]);
+        Assert.Equal("android", form["mobi_app"]);
+        Assert.Equal("android", form["platform"]);
+        Assert.Equal("csrf-token", form["csrf"]);
+        Assert.Equal("buvid-value", form["buvid"]);
+    }
+
     private sealed class CapturingHandler(string json) : HttpMessageHandler
     {
         public Uri? LastUri { get; private set; }
