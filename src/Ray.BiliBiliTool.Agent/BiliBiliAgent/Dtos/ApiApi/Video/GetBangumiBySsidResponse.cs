@@ -16,7 +16,11 @@ public class Result
 
 public class Episode
 {
-    public int aid { get; set; }
+    /// <summary>
+    /// 稿件 avid。同样不能用 int：2022 年后新投稿的 aid 已超过 int.MaxValue，
+    /// 名侦探柯南第 1193 集的 aid 即已溢出，用 int 会让整段 JSON 反序列化失败。
+    /// </summary>
+    public long aid { get; set; }
 
     public required string bvid { get; set; }
 
@@ -28,9 +32,9 @@ public class Episode
 
     public int duration { get; set; }
 
-    public int ep_id { get; set; }
+    public long ep_id { get; set; }
 
-    public int id { get; set; }
+    public long id { get; set; }
 
     public required string long_title { get; set; }
 
