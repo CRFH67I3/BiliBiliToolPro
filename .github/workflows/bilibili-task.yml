@@ -11,7 +11,7 @@
 #   would treat "&" as a background operator and silently drop the rest
 #
 # Scheduled run: Daily & VipBigPoint & MangaPrivilege & Manga & Silver2Coin,
-# once per day at 12:00 Asia/Shanghai (= 04:00 UTC, cron is always UTC).
+# once per day at 16:00 Asia/Shanghai (= 08:00 UTC, cron is always UTC).
 # No random delay and no waiting step: GitHub scheduled runs on this account
 # are unreliable (observed delays of several hours), so the job simply runs
 # whenever the cron actually fires instead of sleeping to a chosen minute.
@@ -27,8 +27,8 @@ on:
         required: true
         default: "Daily"
   schedule:
-    # 04:00 UTC = 12:00 Asia/Shanghai. cron 一律按 UTC 计算。
-    - cron: "0 4 * * *"
+    # 08:00 UTC = 16:00 Asia/Shanghai. cron 一律按 UTC 计算。
+    - cron: "0 8 * * *"
 
 env:
   ASPNETCORE_ENVIRONMENT: ${{ secrets.ENV || 'Production' }}
